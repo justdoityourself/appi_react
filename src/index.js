@@ -3,6 +3,8 @@ import {useState} from 'react';
 let bindings = {};
 let callbacks = {};
 let walking = {};
+let handlers = {};
+let states = {};
 
 export function appiKeys(o)
 {
@@ -18,6 +20,8 @@ export function clearBindings()
 {
   bindings = {};
   callbacks = {};
+  states = {};
+  handlers = {};
 }
 
 export function walk(rid,path,mapFn,mutation)
@@ -31,21 +35,27 @@ export function walk(rid,path,mapFn,mutation)
   walking[rid][path] = {mapFn,mutation, first:true};
 }
 
-export function bind(rid,tsx,dirty,stsx,mutation)
+export function bind(rid,tsx,dirty,stsx,mutation,state,handler)
 {
   if(rid in bindings)
-    return;
+    return state;
 
   bindings[rid] = {tsx,dirty,stsx};
-  callbacks[rid] = {mutation}
+  callbacks[rid] = {mutation};
+  states[rid] = state;
+  handlers[rid] = handler;
+
+  return state;
 }
 
 async function refreshBinding(newBindings)
 {
   for(const [k,v] of Object.entries(newBindings))
   {
+    console.log(newBindings);
     if(v.dirty){
-      let result = await window.AppiClient.Pull(k+".*",-1);
+      const handler = handlers[k] || window.AppiClient;
+      let result = await handler.Pull(k+".*",-1);
 
       if(result && result !== 22)
       {
@@ -53,7 +63,7 @@ async function refreshBinding(newBindings)
         continue;
       }
 
-      let s = window.AppiClient.Get(k+".*");
+      let s = await handler.Get(k+".*");
 
       if(!s.length)
       {
@@ -82,7 +92,7 @@ async function refreshBinding(newBindings)
         {
           const resource = mapFn ? mapFn(key) : key;
 
-          const far = await window.AppiClient.Far(resource);
+          const far = await handler.Far(resource);
 
           map[key] = JSON.parse(far||"{}");
         }
@@ -104,6 +114,8 @@ export function unbind(rid)
   delete bindings[rid];
   delete walking[rid]
   delete callbacks[rid];
+  delete states[rid];
+  delete handlers[rid];
 }
 
 function realId(qid)
@@ -119,18 +131,22 @@ export function walkState(qid,path,mapFn, [reactState, setReactState]) {
   return [reactState, setReactState];
 }
 
-export function bindState(qid, [reactState, setReactState]) {
-  bind(realId(qid),0,false,0,(newJson)=>setReactState(newJson));
+export function bindState(qid, [reactState, setReactState],handler) {
+  let state = bind(realId(qid),0,false,0,(newJson)=>setReactState(newJson),[reactState,setReactState],handler);
 
   let commit = (upsert)=>{
     console.log("MUTATE STATE and propagate", upsert)
   }
 
-  return [reactState, setReactState,commit];
+  return [...state,commit];
 }
 
-export function useAppi(qid, init){
-  return bindState(qid,useState(init||{}))
+export function deriveState(qid) {
+  return states[realId(qid)];
+}
+
+export function useAppi(qid, init,handler){
+  return bindState(qid,useState(init||{}),handler)
 }
 
 export function useWalk(qid,path,mapFn, init){
@@ -144,7 +160,6 @@ async function Poll()
 
   if(window.AppiClient)
   {
-    //console.log("Bind", bindings);
     let _newBindings = await window.AppiClient.Bind(JSON.stringify(bindings));
 
     if(_newBindings)
@@ -180,14 +195,6 @@ export function getAppiClient(){
 }
 
 export function onAppiClient(callback){
-  //Use this if you want to link to appi from html
-  /*<script src="/appi2.js"></script>
-  <script>
-    createAppi().then(async (Appi) => {
-      window.Appi = Appi;
-      window.AppiClient = new Appi.AppiClient("",'{"primary_host":"http://localhost:8099"}',"","");
-    });
-  </script>*/
   let interval = setInterval(()=>{
     const client = getAppiClient();
     if(client){
@@ -293,7 +300,7 @@ export function loadAppiClient(host,callback){
       await Appi.storagePromise;
       
       window.Appi = Appi;
-      window.AppiClient = new Appi.AppiClient("",JSON.stringify({"primary_host":host}),"");
+      window.AppiClient = new Appi.AppiClient(JSON.stringify({network:{primary_host:host}}));
       window.AppiClient.SetLogging(0);
 
       a(window.AppiClient);
@@ -316,8 +323,20 @@ export function loadAppiAdmin(host,secret){
     host="http://localhost:8099"
 
   if(admin) admin.delete();
-  admin = new window.Appi.AppiAdmin("",JSON.stringify({"primary_host":host}));
+  admin = new window.Appi.AppiAdmin(JSON.stringify({network:{primary_host:host}}));
   //admin.SetAuthenticationDetails("",secret)
 
   return admin;
+}
+
+let manager = undefined;
+export function loadAppiManager(host,secret){
+  if(!host)
+    host="http://localhost:8099"
+
+  if(manager) manager.delete();
+  manager = new window.Appi.AppiManager(JSON.stringify({network:{primary_host:host}}));
+  //admin.SetAuthenticationDetails("",secret)
+
+  return manager;
 }
