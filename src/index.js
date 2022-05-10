@@ -223,7 +223,7 @@ export function logout(){
   stopPoll();
   clearBindings();
   window.AppiClient.SetAuthenticationDetails("","","");
-  //TODO remove storage
+  window.AppiClient.ClearCache();
   window.localStorage.removeItem("token");
   window.localStorage.removeItem("user");
   if(onLogoutEvent)onLogoutEvent();
@@ -277,44 +277,61 @@ export async function login(user,password,token,remember)
     }
     else if (onNoAccountEvent) onNoAccountEvent();
   }
+
+  return false;
 }
 
-export function loadAppiClient(host,callback){
-  if(!host)
-    host="http://localhost:8099"
+export function loadAppiClient(host,callback,autoLogin,library){
+    if(!host)
+      host="http://localhost:8099"
 
-  return new Promise( (a,r) => {
-    if(window.AppiClient)
-    {
-      a(window.AppiClient);
-      if(callback) callback(window.AppiClient);
-      return;
-    }
+    if(!library)
+      library = "/appi2.js"
 
-    const appiScript = document.createElement('script');
-    appiScript.onload = async (e) => 
-    {
-      const Appi = await window.createAppi();
-      await Appi.ready;
-      Appi.StartupStorage();
-      await Appi.storagePromise;
-      
-      window.Appi = Appi;
-      window.AppiClient = new Appi.AppiClient(JSON.stringify({network:{primary_host:host}}));
-      window.AppiClient.SetLogging(0);
+    return new Promise( (a,r) => {
+      if(window.AppiClient)
+      {
+        a(window.AppiClient);
+        if(callback) callback(window.AppiClient);
+        return;
+      }
 
-      a(window.AppiClient);
-      if(callback) callback(window.AppiClient);
+      const appiScript = document.createElement('script');
+      appiScript.onload = async (e) => 
+      {
+        const Appi = await window.createAppi();
+        await Appi.ready;
+        Appi.StartupStorage();
+        await Appi.storagePromise;
+        
+        window.Appi = Appi;
+        window.AppiClient = new Appi.AppiClient(JSON.stringify({network:{primary_host:host}}));
+        window.AppiClient.SetLogging(0);
 
-      if(window.localStorage.token&&window.localStorage.user)
-        login(window.localStorage.user,"",window.localStorage.token);
-      else if (onNoAccountEvent) onNoAccountEvent();
-    };
-    appiScript.onerror = r;
-    appiScript.src = "/appi2.js";
+        a(window.AppiClient);
+        if(callback) callback(window.AppiClient);
 
-    document.head.appendChild(appiScript);
-  });
+        if(autoLogin&&window.localStorage.token&&window.localStorage.user)
+          login(window.localStorage.user,"",window.localStorage.token);
+        else if (onNoAccountEvent) onNoAccountEvent();
+      };
+      appiScript.onerror = r;
+      appiScript.src = library;
+
+      document.head.appendChild(appiScript);
+    });
+}
+
+let isBasic = false;
+export function loadBasic({host,callback,autoLogin})
+{
+    isBasic = true;
+    return loadAppiClient(host,callback,autoLogin,"/appi2basic.js");
+}
+
+export function loadAppi({host,callback,autoLogin})
+{
+    return loadAppiClient(host,callback,autoLogin,"/appi2.js");
 }
 
 let admin = undefined;
