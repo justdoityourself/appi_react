@@ -1,10 +1,12 @@
-import {useState} from 'react';
+import {useSyncExternalStore,useCallback} from 'react';
 
 let bindings = {};
-let callbacks = {};
-let walking = {};
-let handlers = {};
-let states = {};
+let links = {};
+let reverse = {};
+let current = {}
+//let walking = {};
+
+let enumerateBindings = 0;
 
 export function appiKeys(o)
 {
@@ -19,12 +21,11 @@ export function appiMeta(o)
 export function clearBindings()
 {
   bindings = {};
-  callbacks = {};
-  states = {};
-  handlers = {};
+  reverse = {};
+  links = {};
 }
 
-export function walk(rid,path,mapFn,mutation)
+/*export function walk(rid,path,mapFn,mutation)
 {
   if(!(rid in walking))
     walking[rid] = {}
@@ -33,48 +34,98 @@ export function walk(rid,path,mapFn,mutation)
     return;
 
   walking[rid][path] = {mapFn,mutation, first:true};
+}*/
+
+export function bind(rid,tsx,mutation)
+{
+  const lid = enumerateBindings++;
+
+  if(!(rid in bindings))
+    bindings[rid] = {tsx};
+
+  links[lid] = {mutation,rid};
+
+  if(!(rid in reverse))
+    reverse[rid] = {};
+
+  reverse[rid][lid] = true;
+
+  return lid;
 }
 
-export function bind(rid,tsx,dirty,stsx,mutation,state,handler)
+export function unbind(lid)
 {
-  if(rid in bindings)
-    return state;
+  if(!(lid in links))
+    return;
 
-  bindings[rid] = {tsx,dirty,stsx};
-  callbacks[rid] = {mutation};
-  states[rid] = state;
-  handlers[rid] = handler;
+  const rid = links[lid].rid;
 
-  return state;
+  delete reverse[rid][lid];
+
+  if(Object.keys(reverse[rid]).length == 0)
+  {
+    delete reverse[rid];
+
+    //When to forget a bind? Right now never:
+    //delete bindings[rid];
+    //delete current[rid];
+  }
+  
+  delete links[lid];
+}
+
+function realId(qid)
+{
+  if(qid.startsWith('@'))
+    return qid;
+
+  let seg = qid.split('.');
+  seg.pop();
+  return seg.join('.');
+}
+
+function QualifyId(id,ext)
+{
+  if(id.startsWith("@"))
+    return id;
+
+  if(!ext)
+    ext = "*";
+  
+  return id+"."+ext;
 }
 
 async function refreshBinding(newBindings)
 {
-  for(const [k,v] of Object.entries(newBindings))
+  for(const [rid,bind] of Object.entries(newBindings))
   {
-    console.log(newBindings);
-    if(v.dirty){
-      const handler = handlers[k] || window.AppiClient;
-      let result = await handler.Pull(k+".*",-1);
-
-      if(result && result !== 22)
+    if(bind.dirty){
+      const handler = window.AppiClient;
+      if(bind.ltsx)
       {
-        console.log("FAILED BIND PULL",k, result);
-        continue;
+        let result = await handler.Pull(QualifyId(rid),-1);
+
+        if(result && result !== 22)
+        {
+          console.log("FAILED BIND PULL",rid, result);
+          continue;
+        }
       }
 
-      let s = await handler.Get(k+".*");
+      let s = await handler.Get(QualifyId(rid));
 
       if(!s.length)
       {
-        console.log("FAILED BIND GET",k);
+        console.log("FAILED BIND GET",rid);
         continue;
       }
 
-      const json = JSON.parse(s);
-      callbacks[k].mutation(json);
+      current[rid] = JSON.parse(s);
 
-      for(const [path,{mapFn,mutation, first}] of Object.entries(walking?.[k] || {}))
+      for(const lid of Object.keys(reverse[rid] || {}))
+        links[lid]?.mutation(current[rid]);
+
+      /*for(const [path,{mapFn,mutation, first}] of Object.entries(walking?.[rid] || {}))
       {
         if(!first)
           continue;
@@ -84,7 +135,7 @@ async function refreshBinding(newBindings)
         if(path)
         {
           for(const step of path.split('/'))
-          resolvedJson = resolvedJson[step];
+            resolvedJson = resolvedJson[step];
         }
 
         let map = {};
@@ -99,59 +150,70 @@ async function refreshBinding(newBindings)
 
         mutation(map);
 
-        walking[k][path].first = false;
-      }
+        walking[rid][path].first = false;
+      }*/
 
-      bindings[k].tsx = v.stsx;
-      bindings[k].dirty = false;
+      bindings[rid].tsx = bind.stsx;
     }
   }
 
 }
 
-export function unbind(rid)
-{
-  delete bindings[rid];
-  delete walking[rid]
-  delete callbacks[rid];
-  delete states[rid];
-  delete handlers[rid];
-}
-
-function realId(qid)
-{
-  let seg = qid.split('.');
-  seg.pop();
-  return seg.join('.');
-}
-
-export function walkState(qid,path,mapFn, [reactState, setReactState]) {
+/*export function walkState(qid,path,mapFn, [reactState, setReactState]) {
   walk(realId(qid),path,mapFn,(newJson)=>setReactState(newJson));
 
   return [reactState, setReactState];
 }
 
 export function bindState(qid, [reactState, setReactState],handler) {
-  let state = bind(realId(qid),0,false,0,(newJson)=>setReactState(newJson),[reactState,setReactState],handler);
+  let state = bind(realId(qid),0,false,0,setReactState,[reactState,setReactState],handler);
 
   let commit = (upsert)=>{
     console.log("MUTATE STATE and propagate", upsert)
   }
 
   return [...state,commit];
+}*/
+
+export function useAppi(qid, init){
+  const rid = realId(qid);
+  let value = current[rid] || init || {};
+  let lid = -1;
+  const store = useSyncExternalStore(
+      useCallback((callback)=>{
+        //console.log("init store",callback,qid)
+
+        if(lid == -1)
+          lid = bind(rid,0,(newValue)=>{
+            //console.log("newdata",newValue);
+            value=newValue;
+            callback(newValue);
+          })
+
+        return (e)=>{
+          //console.log("unbind",e,qid)
+          lid = -1;
+          unbind(lid);
+        }
+      }),
+      useCallback(() => {
+        //console.log("GET",value);
+        return value;
+      })
+    );
+
+  const mutation = useCallback((updates)=>{
+    window.AppiClient.Upsert(qid,updates);
+  });
+
+  return [store,mutation];
+
+  //return bindState(qid,useState(init||{}),handler)
 }
 
-export function deriveState(qid) {
-  return states[realId(qid)];
-}
-
-export function useAppi(qid, init,handler){
-  return bindState(qid,useState(init||{}),handler)
-}
-
-export function useWalk(qid,path,mapFn, init){
+/*export function useWalk(qid,path,mapFn, init){
   return walkState(qid,path,mapFn,useState(init||{}))
-}
+}*/
 
 async function Poll()
 {
