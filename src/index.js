@@ -266,6 +266,27 @@ export function onAppiClient(callback){
   }, 200);
 }
 
+let eventHandlers = {};
+let eventEnumerator = 0;
+
+export function registerEventHandler(callback){
+  const id = eventEnumerator++;
+
+  eventHandlers[id] = callback;
+
+  return id;
+}
+
+export function removeEventHandler(id){
+  delete eventHandlers[id];
+}
+
+function propagateEvent(type,params){
+  for(const handler of Object.values(eventHandlers))
+    handler(type,params);
+}
+
+
 var onLoginEvent = undefined;
 export function onLogin(callback){
   onLoginEvent=callback;
@@ -289,6 +310,8 @@ export function logout(){
   window.localStorage.removeItem("token");
   window.localStorage.removeItem("user");
   if(onLogoutEvent)onLogoutEvent();
+  propagateEvent("logout");
+  loggedIn = false;
 }
 
 export function signup(user,password)
@@ -306,6 +329,8 @@ export function signup(user,password)
   });
 }
 
+export let loggedIn = false;
+
 export async function login(user,password,token,remember)
 {
   if(token){
@@ -317,9 +342,16 @@ export async function login(user,password,token,remember)
       startPoll();
 
       if(onLoginEvent) onLoginEvent(window.AppiClient);
-      return true;
+      
+      propagateEvent("login",window.AppiClient);
+
+      return loggedIn = true;
     }
-    else if (onNoAccountEvent) onNoAccountEvent();
+    else
+    {
+      if (onNoAccountEvent) onNoAccountEvent();
+      propagateEvent("noAccount",window.AppiClient);
+    }
   }
   else {
     const result = await window.AppiClient.ValidateUser(user,password,"");
@@ -335,15 +367,22 @@ export async function login(user,password,token,remember)
       }
 
       if(onLoginEvent) onLoginEvent(window.AppiClient);
-      return true;
+
+      propagateEvent("login",window.AppiClient);
+
+      return loggedIn = true;
     }
-    else if (onNoAccountEvent) onNoAccountEvent();
+    else
+    {
+      if (onNoAccountEvent) onNoAccountEvent();
+      propagateEvent("noAccount",window.AppiClient);
+    }
   }
 
   return false;
 }
 
-export function loadAppiClient(host,callback,autoLogin,library){
+export function loadAppiClient(host,callback,autoLogin,library,logging){
     if(!host)
       host="http://localhost:8099"
 
@@ -368,14 +407,18 @@ export function loadAppiClient(host,callback,autoLogin,library){
         
         window.Appi = Appi;
         window.AppiClient = new Appi.AppiClient(JSON.stringify({network:{primary_host:host}}));
-        window.AppiClient.SetLogging(0);
+        window.AppiClient.SetLogging(logging);
 
         a(window.AppiClient);
         if(callback) callback(window.AppiClient);
 
         if(autoLogin&&window.localStorage.token&&window.localStorage.user)
           login(window.localStorage.user,"",window.localStorage.token);
-        else if (onNoAccountEvent) onNoAccountEvent();
+        else
+        {
+          if (onNoAccountEvent) onNoAccountEvent();
+          propagateEvent("noAccount",window.AppiClient);
+        }
       };
       appiScript.onerror = r;
       appiScript.src = library;
@@ -385,15 +428,15 @@ export function loadAppiClient(host,callback,autoLogin,library){
 }
 
 let isBasic = false;
-export function loadBasic({host,callback,autoLogin})
+export function loadBasic({host,callback,autoLogin,logging})
 {
     isBasic = true;
-    return loadAppiClient(host,callback,autoLogin,"/appi2basic.js");
+    return loadAppiClient(host,callback,autoLogin,"/appi2basic.js",logging);
 }
 
-export function loadAppi({host,callback,autoLogin})
+export function loadAppi({host,callback,autoLogin,logging})
 {
-    return loadAppiClient(host,callback,autoLogin,"/appi2.js");
+    return loadAppiClient(host,callback,autoLogin,"/appi2.js",logging);
 }
 
 let admin = undefined;
