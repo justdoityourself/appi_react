@@ -1,10 +1,10 @@
-import {useSyncExternalStore,useCallback} from 'react';
+import {useSyncExternalStore,useCallback,useState} from 'react';
 
 let bindings = {};
 let links = {};
 let reverse = {};
-let current = {}
-//let walking = {};
+let current = {};
+let delta = {};
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -40,17 +40,6 @@ export function clearBindings()
   reverse = {};
   links = {};
 }
-
-/*export function walk(rid,path,mapFn,mutation)
-{
-  if(!(rid in walking))
-    walking[rid] = {}
-
-  if(path in walking[rid])
-    return;
-
-  walking[rid][path] = {mapFn,mutation, first:true};
-}*/
 
 export function bind(rid,tsx,mutation)
 {
@@ -141,95 +130,105 @@ async function refreshBinding(newBindings)
       for(const lid of Object.keys(reverse[rid] || {}))
         links[lid]?.mutation(current[rid]);
 
-      /*for(const [path,{mapFn,mutation, first}] of Object.entries(walking?.[rid] || {}))
-      {
-        if(!first)
-          continue;
-
-        let resolvedJson = json;
-
-        if(path)
-        {
-          for(const step of path.split('/'))
-            resolvedJson = resolvedJson[step];
-        }
-
-        let map = {};
-        for(const key of appiKeys(resolvedJson))
-        {
-          const resource = mapFn ? mapFn(key) : key;
-
-          const far = await handler.Far(resource);
-
-          map[key] = JSON.parse(far||"{}");
-        }
-
-        mutation(map);
-
-        walking[rid][path].first = false;
-      }*/
-
       bindings[rid].tsx = bind.stsx;
     }
   }
-
 }
 
-/*export function walkState(qid,path,mapFn, [reactState, setReactState]) {
-  walk(realId(qid),path,mapFn,(newJson)=>setReactState(newJson));
 
-  return [reactState, setReactState];
-}
-
-export function bindState(qid, [reactState, setReactState],handler) {
-  let state = bind(realId(qid),0,false,0,setReactState,[reactState,setReactState],handler);
-
-  let commit = (upsert)=>{
-    console.log("MUTATE STATE and propagate", upsert)
+function merge(target, source) {
+  for (const key in source) {
+    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+      if (!target[key]) 
+        Object.assign(target, { [key]: {} });
+      merge(target[key], source[key]);
+    } else
+      Object.assign(target, { [key]: source[key] });
   }
 
-  return [...state,commit];
-}*/
+  return target;
+}
 
-export function useAppi(qid, init){
+
+export function useAppi(qid, init, _onValue, _onInit){
   const rid = realId(qid);
   let value = current[rid] || init || {};
   let lid = -1;
+
   const store = useSyncExternalStore(
       useCallback((callback)=>{
-        //console.log("init store",callback,qid)
-
         if(lid == -1)
+        {
           lid = bind(rid,0,(newValue)=>{
-            //console.log("newdata",newValue);
             value=newValue;
             callback(newValue);
+            if(_onValue) _onValue(newValue)
           })
 
+          if(_onInit) _onInit(x=>{value=x;callback(x);},lid,value);
+        }
+
         return (e)=>{
-          //console.log("unbind",e,qid)
           lid = -1;
           unbind(lid);
         }
       }),
       useCallback(() => {
-        //console.log("GET",value);
         return value;
       })
     );
 
-  const mutation = useCallback((updates)=>{
-    serialize(async ()=>await window.AppiClient.Upsert(qid,JSON.stringify(updates)))
+  const mutation = useCallback((updates,commit)=>{
+    serialize(async ()=>
+    {
+      await window.AppiClient.Upsert(qid,JSON.stringify(updates));
+      if(commit)
+        await window.AppiClient.Push(qid);
+    });
   });
 
   return [store,mutation];
-
-  //return bindState(qid,useState(init||{}),handler)
 }
 
-/*export function useWalk(qid,path,mapFn, init){
-  return walkState(qid,path,mapFn,useState(init||{}))
-}*/
+export function useOptimistic(qid,init,auto)
+{
+  const [dirty,setDirty] = useState(false);
+
+  const rid = realId(qid);
+  let lid = -1;
+
+  const [store,_mutation] = useAppi(qid,init,()=>{},(_cb,_lid,_value)=>lid = _lid);
+
+  const setStore = useCallback((updates,commit)=>{
+    if(auto)
+      _mutation(updates,commit);
+    else
+    {
+      delta[rid] = merge(delta[rid] || {},updates);
+      setDirty(true);
+    }
+
+    current[rid] = merge(JSON.parse(JSON.stringify(current[rid])),updates);
+    links[lid]?.mutation(current[rid]);
+  });
+
+  const flush = useCallback((commit)=>{
+    if(dirty){
+      _mutation(delta[rid],commit);
+      setDirty(false);
+      delete delta[rid];
+    }
+  });
+
+  const clear = useCallback(()=>{
+    if(dirty){
+      setDirty(false);
+      delete delta[rid];
+    }
+  });
+
+  return {store,setStore,flush,dirty,clear};
+}
 
 async function Poll()
 {
