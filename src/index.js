@@ -6,6 +6,22 @@ let reverse = {};
 let current = {}
 //let walking = {};
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+let blocked = false;
+
+export async function serialize(cb){
+  while(blocked){
+    await sleep(100);
+  }
+
+  blocked = true;
+  try{ await cb(); }catch(e){}
+  blocked = false;
+}
+
 let enumerateBindings = 0;
 
 export function appiKeys(o)
@@ -203,7 +219,7 @@ export function useAppi(qid, init){
     );
 
   const mutation = useCallback((updates)=>{
-    window.AppiClient.Upsert(qid,updates);
+    serialize(async ()=>await window.AppiClient.Upsert(qid,JSON.stringify(updates)))
   });
 
   return [store,mutation];
@@ -228,7 +244,7 @@ async function Poll()
     {
       let newBindings=JSON.parse(_newBindings);
 
-      await refreshBinding(newBindings);
+      await serialize(async ()=>await refreshBinding(newBindings));
     }
   }
 
