@@ -13,13 +13,16 @@ function sleep(ms) {
 let blocked = false;
 
 export async function serialize(cb){
+  let result;
   while(blocked){
     await sleep(100);
   }
 
   blocked = true;
-  try{ await cb(); }catch(e){}
+  try{ result = await cb(); }catch(e){}
   blocked = false;
+
+  return result;
 }
 
 let enumerateBindings = 0;
@@ -397,14 +400,18 @@ export async function login(user,password,token,remember)
   return false;
 }
 
+let loadingAppi;
 export function loadAppiClient(host,callback,autoLogin,library,logging){
+    if(loadingAppi)
+      return loadingAppi;
+
     if(!host)
       host="http://localhost:8099"
 
     if(!library)
       library = "/appi2.js"
 
-    return new Promise( (a,r) => {
+    return loadingAppi = new Promise( (a,r) => {
       if(window.AppiClient)
       {
         a(window.AppiClient);
@@ -422,7 +429,7 @@ export function loadAppiClient(host,callback,autoLogin,library,logging){
         
         window.Appi = Appi;
         window.AppiClient = new Appi.AppiClient(JSON.stringify({network:{primary_host:host}}));
-        window.AppiClient.SetLogging(logging);
+        window.AppiClient.SetLogging(logging || 0);
 
         a(window.AppiClient);
         if(callback) callback(window.AppiClient);
