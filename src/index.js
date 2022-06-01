@@ -1,5 +1,6 @@
 import {useSyncExternalStore,useCallback,useState} from 'react';
 
+let handlers = {};
 let bindings = {};
 let links = {};
 let reverse = {};
@@ -39,17 +40,21 @@ export function appiMeta(o)
 
 export function clearBindings()
 {
+  handlers = {};
   bindings = {};
   reverse = {};
   links = {};
 }
 
-export function bind(rid,tsx,mutation)
+export function bind(rid,tsx,mutation,handler)
 {
   const lid = enumerateBindings++;
 
-  if(!(rid in bindings))
+  if(!(rid in bindings)){
     bindings[rid] = {tsx};
+    handlers[rid] = handler; // The first binding defines the handler. A single resource can't be bound by two separate handlers ATM.
+  }
+
 
   links[lid] = {mutation,rid};
 
@@ -108,7 +113,7 @@ async function refreshBinding(newBindings)
   for(const [rid,bind] of Object.entries(newBindings))
   {
     if(bind.dirty){
-      const handler = window.AppiClient;
+      const handler = handlers[rid] ? loadHandler(handlers[rid]) : window.AppiClient;
       if(bind.ltsx)
       {
         let result = await handler.Pull(QualifyId(rid),-1);
@@ -152,8 +157,7 @@ function merge(target, source) {
   return target;
 }
 
-
-export function useAppi(qid, init, _onValue, _onInit){
+export function useAppi(qid, init, _onValue, _onInit, handler){
   const rid = realId(qid);
   let value = current[rid] || init || {};
   let lid = -1;
@@ -166,7 +170,7 @@ export function useAppi(qid, init, _onValue, _onInit){
             value=newValue;
             callback(newValue);
             if(_onValue) _onValue(newValue)
-          })
+          },handler)
 
           if(_onInit) _onInit(x=>{value=x;callback(x);},lid,value);
         }
@@ -191,6 +195,11 @@ export function useAppi(qid, init, _onValue, _onInit){
   });
 
   return [store,mutation];
+}
+
+export function useHandler(qid,init,handler)
+{
+  return useAppi(qid,init,null,null,handler);
 }
 
 export function useOptimistic(qid,init,auto)
@@ -483,4 +492,22 @@ export function loadAppiManager(host,secret){
   //admin.SetAuthenticationDetails("",secret)
 
   return manager;
+}
+
+export function loadHandler({type,host,secret})
+{
+  switch(type){
+    case "manager": return manager || loadAppiManager(host,secret);
+    case "admin": return manager || loadAppiAdmin(host,secret);
+    default: return null;
+  }
+}
+
+export function lookupHandler(type)
+{
+  switch(type){
+    case "manager": return manager;
+    case "admin": return admin;
+    default: return null;
+  }
 }
