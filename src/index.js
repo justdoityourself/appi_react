@@ -143,7 +143,6 @@ async function refreshBinding(newBindings)
   }
 }
 
-
 function merge(target, source) {
   for (const key in source) {
     if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
@@ -161,6 +160,8 @@ export function useAppi(qid, init, _onValue, _onInit, handler){
   const rid = realId(qid);
   let value = current[rid] || init || {};
   let lid = -1;
+
+  if(!current[rid]) serialize(async ()=> await PollNow());
 
   const store = useSyncExternalStore(
       useCallback((callback)=>{
@@ -242,6 +243,7 @@ export function useOptimistic(qid,init,auto)
   return {store,setStore,flush,dirty,clear};
 }
 
+let pollTimeout = null;
 async function Poll()
 {
   if(!polling)
@@ -249,18 +251,32 @@ async function Poll()
 
   if(window.AppiClient)
   {
-    let _newBindings = await window.AppiClient.Bind(JSON.stringify(bindings));
-
-    if(_newBindings)
+    serialize(async ()=>
     {
-      let newBindings=JSON.parse(_newBindings);
+      let _newBindings = await window.AppiClient.Bind(JSON.stringify(bindings));
 
-      await serialize(async ()=>await refreshBinding(newBindings));
-    }
+      if(_newBindings)
+      {
+        let newBindings=JSON.parse(_newBindings);
+  
+        await refreshBinding(newBindings);
+      }
+    });
   }
 
   if(polling)
-    setTimeout(Poll,10000);
+    pollTimeout = setTimeout(Poll,10000);
+}
+
+async function PollNow()
+{
+  if(!polling)
+    return;
+
+  if(pollTimeout)
+    clearTimeout(pollTimeout);
+  
+  await Poll();
 }
 
 let polling = false;
