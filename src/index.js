@@ -1,4 +1,5 @@
 import {useSyncExternalStore,useCallback,useState} from 'react';
+import mime from 'mime'
 
 let handlers = {};
 let bindings = {};
@@ -116,7 +117,7 @@ async function refreshBinding(newBindings)
       const handler = handlers[rid] ? loadHandler(handlers[rid]) : window.AppiClient;
       if(bind.ltsx)
       {
-        let result = await handler.Pull(QualifyId(rid),-1);
+        let result = await _Pull(QualifyId(rid),-1,handler);
 
         if(result && result !== 22)
         {
@@ -125,7 +126,7 @@ async function refreshBinding(newBindings)
         }
       }
 
-      let s = await handler.Get(QualifyId(rid));
+      let s = await _Get(QualifyId(rid));
 
       if(!s.length)
       {
@@ -187,11 +188,21 @@ export function useAppi(qid, init, _onValue, _onInit, handler){
     );
 
   const mutation = useCallback((updates,commit)=>{
-    serialize(async ()=>
+    return serialize(async ()=>
     {
-      await window.AppiClient.Upsert(qid,JSON.stringify(updates));
+      let result = await _Upsert(qid,JSON.stringify(updates));
+
+      if(result)
+        console.log("UPSERT FAILED", qid, updates,result)
+
       if(commit)
-        await window.AppiClient.Push(qid);
+      {
+        result = await _Sync(qid);
+
+        if(result)
+          console.log("SYNC FAILED", qid, updates,result)
+      }
+
     });
   });
 
@@ -240,7 +251,7 @@ export function useOptimistic(qid,init,auto)
     }
   });
 
-  return {store,setStore,flush,dirty,clear};
+  return {store,setStore,flush,dirty,clear,changes:()=>delta[rid]};
 }
 
 let pollTimeout = null;
@@ -253,12 +264,12 @@ async function Poll()
   {
     serialize(async ()=>
     {
-      let _newBindings = await window.AppiClient.Bind(JSON.stringify(bindings));
+      let _newBindings = await _Bind(JSON.stringify(bindings));
 
       if(_newBindings)
       {
         let newBindings=JSON.parse(_newBindings);
-  
+
         await refreshBinding(newBindings);
       }
     });
@@ -360,9 +371,9 @@ export function logout(){
 export function signup(user,password)
 {
   return new Promise( (a,r) => {
-    window.AppiClient.AsyncCreateUser(user,password);
+    let aid = window.AppiClient.AsyncCreateUser(user,password);
     let interval = setInterval(()=>{
-      let result = window.AppiClient.Ready();
+      let result = window.AppiClient.AsyncReady(aid);
       if(result !== -1)
       {
         clearInterval(interval);
@@ -377,7 +388,7 @@ export let loggedIn = false;
 export async function login(user,password,token,remember)
 {
   if(token){
-    const result = await window.AppiClient.ValidateUser(user,"",token);
+    const result = await _ValidateUser(user,"",token);
     
     if(!result){
       window.AppiClient.SetAuthenticationDetails(user,"",token);
@@ -397,7 +408,7 @@ export async function login(user,password,token,remember)
     }
   }
   else {
-    const result = await window.AppiClient.ValidateUser(user,password,"");
+    const result = await _ValidateUser(user,password,"");
     
     if(!result){
       window.AppiClient.SetAuthenticationDetails(user,password,"");
@@ -426,6 +437,7 @@ export async function login(user,password,token,remember)
 }
 
 let loadingAppi;
+let host_address;
 export function loadAppiClient(host,callback,autoLogin,library,logging){
     if(loadingAppi)
       return loadingAppi;
@@ -453,6 +465,7 @@ export function loadAppiClient(host,callback,autoLogin,library,logging){
         await Appi.storagePromise;
         
         window.Appi = Appi;
+        host_address = host;
         window.AppiClient = new Appi.AppiClient(JSON.stringify({network:{primary_host:host}}));
         window.AppiClient.SetLogging(logging || 0);
 
@@ -486,17 +499,6 @@ export function loadAppi({host,callback,autoLogin,logging})
     return loadAppiClient(host,callback,autoLogin,"/appi2.js",logging);
 }
 
-let admin = undefined;
-export function loadAppiAdmin(host,secret){
-  if(!host)
-    host="http://localhost:8099"
-
-  if(admin) admin.delete();
-  admin = new window.Appi.AppiAdmin(JSON.stringify({network:{primary_host:host}}));
-  //admin.SetAuthenticationDetails("",secret)
-
-  return admin;
-}
 
 let manager = undefined;
 export function loadAppiManager(host,secret){
@@ -504,8 +506,8 @@ export function loadAppiManager(host,secret){
     host="http://localhost:8099"
 
   if(manager) manager.delete();
-  manager = new window.Appi.AppiManager(JSON.stringify({network:{primary_host:host}}));
-  //admin.SetAuthenticationDetails("",secret)
+  manager = new window.Appi.AppiClient(JSON.stringify({network:{primary_host:host}}));
+  manager.Sudo(secret)
 
   return manager;
 }
@@ -525,5 +527,141 @@ export function lookupHandler(type)
     case "manager": return manager;
     case "admin": return admin;
     default: return null;
+  }
+}
+
+async function waitMs(ms)
+{
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+//
+// Corrective CRUD call for true async or basic modes.
+//
+
+export const _Pull = async (id,tsx,handler) => GetStatus(handler,"Pull",id,tsx);
+export const _Push = async (id,handler) => GetStatus(handler,"Push",id);
+export const _Sync = async (id,handler) => GetStatus(handler,"Sync",id);
+export const _Upsert = async (qid,payload,handler) => GetStatus(handler,"Upsert",qid,payload);
+export const _ValidateUser = async (user,challenge,token,handler) => GetStatus(handler,"ValidateUser",user,challenge,token);
+
+let db;
+export const _CacheRead = (id)=>{
+  return new Promise((a,q) => {
+    const get = () => {
+      const transaction = db.transaction(["FILE_DATA"], "readwrite");
+  
+      transaction.oncomplete = (event) =>{};
+      transaction.onerror = q;
+  
+      const objectStore = transaction.objectStore("FILE_DATA");
+      const objectStoreRequest = objectStore.get(id);
+  
+      objectStoreRequest.onsuccess = (event) => {
+        a(objectStoreRequest.result?.contents);
+      };
+    };
+  
+    if(!db)
+    {
+      const DBOpenRequest = window.indexedDB.open("/appi");
+  
+      DBOpenRequest.onsuccess = (event) => {
+        db = DBOpenRequest.result;
+    
+        get();
+      };
+      DBOpenRequest.onerror = q;
+    }
+    else
+      get();
+  });
+}
+
+export const _CacheReadUrl = async (id)=>{
+  let name = id.replace("/appi/","");
+  let retry = 4;
+  let buffer;
+  while(retry)
+  {
+    buffer = await _CacheRead(id);
+
+    if(buffer)
+      break;
+
+    waitMs(1000);
+  }
+
+  if(!buffer)
+  {
+    console.log("FILE DOESN'T EXIST");
+    return {};
+  }
+
+  const blob = new Blob([buffer], { type: mime.getType(id) });
+  const url = URL.createObjectURL(blob);
+
+  return {url,size:buffer.length,name};
+}
+
+export const _Get = async (id,handler) => GetData(handler,"Get",id);
+export const _Bind = async (bindings,handler) => GetData(handler,"Bind",bindings);
+
+export const _FileAsUrl = (file) =>
+{
+  if(file?.id)
+    return `${host_address}/bulk/${file.type}/${file.id}`;
+  return "";
+}
+
+
+export async function GetStatus(handler,method)
+{
+  if(!handler)
+    handler = window.AppiClient;
+
+  if(isBasic)
+    return await handler[method].apply(handler, [].slice.call(arguments,2));
+  else
+  {
+    let aid = handler["Async"+method].apply(handler, [].slice.call(arguments,2));
+    while(true)
+    {
+      await waitMs(50);
+      let result = handler.AsyncReady(aid);
+      if(result < -1)
+        throw "HUH?";
+      else if(result == -1)
+        continue;
+
+      return result;
+    }
+  }
+}
+
+export async function GetData(handler,method)
+{
+  if(!handler)
+    handler = window.AppiClient;
+
+  if(isBasic)
+    return await handler[method].apply(handler, [].slice.call(arguments,2));
+  else
+  {
+    let aid = handler["Async"+method].apply(handler, [].slice.call(arguments,2));
+    while(true)
+    {
+      await waitMs(50);
+      let result = handler.AsyncData(aid);
+
+      if(result == "INVALID")
+        throw "HUH?";
+      else if(result == "NOTREADY")
+        continue;
+
+      return result;
+    }
   }
 }
